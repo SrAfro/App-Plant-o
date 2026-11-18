@@ -80,4 +80,32 @@ assert.strictEqual(r.minutos, 720);
 r = C.calcularPlantao({ inicio: '2026-11-18T07:30', fim: '2026-11-18T19:00' }, local);
 assert.strictEqual(r.minutos, 690);
 
+// Contrato HRVJ: valores por plantão de 12h (base 12)
+const v12 = C.emptyValores();
+['seg','ter','qua','qui','sex'].forEach(k => { v12[k] = { D: 2484.51, N: 2616.88 }; });
+v12.sex.N = 2747.21; v12.sab = { D: 2747.21, N: 2747.21 }; v12.dom = { D: 2747.21, N: 2747.21 };
+v12.fer = { D: 3402.71, N: 3402.71 };
+const hrvj = { nome: 'HRVJ', diaCompetencia: 15, horaDiurno: '07:00', horaNoturno: '19:00', regraNoturno: 'inicio',
+  toleranciaEntrada: 60, toleranciaSaida: 0,
+  tabelas: [{ id: 'h', vigencia: '2026-01-01', base: 12, valores: v12 }], feriados: C.feriadosHRVJ(2026) };
+const val = (i, f) => C.calcularPlantao({ inicio: i, fim: f }, hrvj).valor;
+assert.strictEqual(val('2026-11-18T07:00', '2026-11-18T19:00'), 2484.51);          // qua diurno
+assert.strictEqual(val('2026-11-19T19:00', '2026-11-20T07:00'), 2616.88);          // qui noturno
+assert.strictEqual(val('2026-11-20T19:00', '2026-11-21T07:00'), 2747.21);          // sex noturno
+assert.strictEqual(val('2026-11-20T07:00', '2026-11-21T07:00'), 2484.51 + 2747.21); // sex 24h
+assert.strictEqual(val('2026-11-22T07:00', '2026-11-23T07:00'), 2 * 2747.21);      // dom 24h
+assert.strictEqual(val('2026-12-24T07:00', '2026-12-24T19:00'), 2484.51);          // 24/12 diurno (qui) normal
+assert.strictEqual(val('2026-12-24T19:00', '2026-12-25T07:00'), 3402.71);          // 24/12 noturno feriado
+assert.strictEqual(val('2026-12-25T07:00', '2026-12-26T07:00'), 2 * 3402.71);      // Natal 24h
+assert.strictEqual(val('2026-02-14T07:00', '2026-02-14T19:00'), 2747.21);          // sáb de Carnaval diurno = fds
+assert.strictEqual(val('2026-02-14T19:00', '2026-02-15T07:00'), 3402.71);          // sáb de Carnaval noturno
+assert.strictEqual(val('2026-02-17T19:00', '2026-02-18T07:00'), 3402.71);          // terça de Carnaval noturno
+assert.strictEqual(val('2026-02-18T07:00', '2026-02-18T19:00'), 2484.51);          // quarta de cinzas normal
+assert.strictEqual(val('2026-04-03T07:00', '2026-04-03T19:00'), 3402.71);          // Sexta-feira Santa diurno
+assert.strictEqual(val('2026-04-05T19:00', '2026-04-06T07:00'), 3402.71);          // Páscoa noturno
+// 6 horas de quarta diurno = metade exata
+assert.strictEqual(val('2026-11-18T07:00', '2026-11-18T13:00'), Math.round(2484.51 / 2 * 100) / 100);
+// atraso tolerado mantém o valor cheio
+assert.strictEqual(val('2026-11-18T08:00', '2026-11-18T19:00'), 2484.51);
+
 console.log('OK — todos os testes passaram');

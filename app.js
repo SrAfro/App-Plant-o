@@ -17,17 +17,39 @@
     } catch (e) { console.error(e); }
     return seed();
   }
-  function seed() {
-    return {
-      versao: 1,
-      locais: [Object.assign(novoLocal('HRVJ — Hospital Regional Vale do Jaguaribe', 15, CORES[0]), { toleranciaEntrada: 60, toleranciaSaida: 0 })],
-      plantoes: [],
-      ui: {},
-    };
+  // Contrato HRVJ — Cirurgia Geral (valores por plantão de 12h)
+  function valoresHRVJ() {
+    const HRVJ = { util: { D: 2484.51, N: 2616.88 }, fds: 2747.21, fer: 3402.71 };
+    const v = C.emptyValores();
+    ['seg', 'ter', 'qua', 'qui', 'sex'].forEach(k => { v[k] = { D: HRVJ.util.D, N: HRVJ.util.N }; });
+    v.sex.N = HRVJ.fds; // sexta noturno = valor de fim de semana
+    v.sab = { D: HRVJ.fds, N: HRVJ.fds }; v.dom = { D: HRVJ.fds, N: HRVJ.fds };
+    v.fer = { D: HRVJ.fer, N: HRVJ.fer };
+    return v;
   }
+  function aplicarModeloHRVJ(l) {
+    const y = new Date().getFullYear();
+    l.tabelas = [{ id: uid(), vigencia: `${y}-01-01`, base: 12, obs: 'Cirurgia Geral — valores vigentes (por plantão de 12h)', valores: valoresHRVJ() }];
+    l.toleranciaEntrada = 60; l.toleranciaSaida = 0; l.regraNoturno = 'inicio';
+    const novos = [...C.feriadosHRVJ(y), ...C.feriadosHRVJ(y + 1)].filter(f => !l.feriados.some(x => x.data === f.data));
+    l.feriados.push(...novos);
+  }
+  function seed() {
+    const l = novoLocal('HRVJ — Hospital Regional Vale do Jaguaribe', 15, CORES[0]);
+    aplicarModeloHRVJ(l);
+    return { versao: 2, locais: [l], plantoes: [], ui: {} };
+  }
+  function tabelaZerada(t) { return Object.values(t.valores || {}).every(v => !Number(v.D) && !Number(v.N)); }
   function migrate(d) {
     d.locais = d.locais || []; d.plantoes = d.plantoes || []; d.ui = d.ui || {};
     d.locais.forEach(l => { l.toleranciaEntrada = l.toleranciaEntrada || 0; l.toleranciaSaida = l.toleranciaSaida || 0; l.tabelas = l.tabelas || []; l.feriados = l.feriados || []; l.recebidos = l.recebidos || {}; });
+    if ((d.versao || 1) < 2) {
+      // v2: o HRVJ criado sem valores recebe o contrato vigente e os feriados especiais
+      d.locais.filter(l => /^HRVJ/.test(l.nome) && l.tabelas.every(tabelaZerada)).forEach(l => {
+        l.feriados = []; aplicarModeloHRVJ(l); // o contrato define quais feriados valem
+      });
+      d.versao = 2;
+    }
     return d;
   }
   function save() {
@@ -102,6 +124,7 @@
         try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* sem armazenamento local */ }
         remote.status = 'nuvem';
         render();
+        agendarSync(); // envia ajustes de migração, se houver
       } else {
         await sincronizar(); // primeira vez: envia o que existe neste aparelho
       }
@@ -135,7 +158,7 @@
     return {
       id: uid(), nome, cor, diaCompetencia: dia, horaDiurno: '07:00', horaNoturno: '19:00',
       regraNoturno: 'inicio', toleranciaEntrada: 0, toleranciaSaida: 0,
-      tabelas: [{ id: uid(), vigencia: `${y}-01-01`, obs: '', valores: C.emptyValores() }],
+      tabelas: [{ id: uid(), vigencia: `${y}-01-01`, base: 12, obs: '', valores: C.emptyValores() }],
       feriados: [], recebidos: {},
     };
   }
@@ -155,6 +178,7 @@
   }
   function brNum(v) { return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function parseNum(s) { if (typeof s === 'number') return s; const n = Number(String(s).replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : 0; }
+  function unidade(t) { const b = C.baseTabela(t); return b === 1 ? 'R$/hora' : `R$ por plantão de ${b}h`; }
   function periodoLabel(p) { return p === 'D' ? 'Diurno' : 'Noturno'; }
   function compDe(p, local) { return C.competenciaInicio(p.inicio.slice(0, 10), local.diaCompetencia); }
 
@@ -398,8 +422,9 @@
     const l = getLocal(f.localId);
     const wd = iso => iso ? C.WEEKDAY_NAMES[C.weekday(iso)] : '';
     const he = document.getElementById('h-ent'), hs = document.getElementById('h-sai');
-    if (he) he.textContent = f.ed ? wd(f.ed) + (l && C.isFeriado(l, f.ed) ? ' · FERIADO' : '') : '';
-    if (hs) hs.textContent = f.sd ? wd(f.sd) + (l && C.isFeriado(l, f.sd) ? ' · FERIADO' : '') : '';
+    const fer = iso => { const x = l && C.feriadoDe(l, iso); return x ? ` · FERIADO${x.periodos === 'N' ? ' (noturno)' : x.periodos === 'D' ? ' (diurno)' : ''}: ${x.nome}` : ''; };
+    if (he) he.textContent = f.ed ? wd(f.ed) + fer(f.ed) : '';
+    if (hs) hs.textContent = f.sd ? wd(f.sd) + fer(f.sd) : '';
     if (!l || !f.ed || !f.eh || !f.sd || !f.sh) { el.innerHTML = '<span class="muted">Preencha entrada e saída.</span>'; return; }
     const p = formPlantao(f);
     const r = C.calcularPlantao(p, l);
@@ -452,11 +477,11 @@
     const cards = db.locais.map(l => {
       const t = C.tabelaVigente(l, hoje);
       const v = t ? t.valores : null;
-      const resumo = v ? `Seg D/N: ${brNum(v.seg.D)} / ${brNum(v.seg.N)} · Sáb D/N: ${brNum(v.sab.D)} / ${brNum(v.sab.N)} · Feriado D/N: ${brNum(v.fer.D)} / ${brNum(v.fer.N)}` : 'Sem tabela vigente';
+      const resumo = v ? `${unidade(t)} — Seg D/N: ${brNum(v.seg.D)} / ${brNum(v.seg.N)} · Sex N: ${brNum(v.sex.N)} · Sáb D/N: ${brNum(v.sab.D)} / ${brNum(v.sab.N)} · Feriado D/N: ${brNum(v.fer.D)} / ${brNum(v.fer.N)}` : 'Sem tabela vigente';
       return `<div class="card tap" data-act="abrir-local" data-id="${l.id}">
         <h2><span class="dot" style="background:${esc(l.cor)}"></span>${esc(l.nome)}</h2>
         <div class="muted">Competência inicia dia ${l.diaCompetencia} · Diurno ${l.horaDiurno}–${l.horaNoturno} · Tolerância entrada ${l.toleranciaEntrada || 0} min / saída ${l.toleranciaSaida || 0} min · ${l.tabelas.length} tabela(s) · ${l.feriados.length} feriado(s)</div>
-        <div class="hint">R$/h vigente — ${resumo}</div>
+        <div class="hint">Vigente — ${resumo}</div>
       </div>`;
     }).join('');
     return `${cards || '<div class="empty">Nenhum local cadastrado.</div>'}
@@ -477,7 +502,8 @@
       </div>`).join('');
     const ferAno = new Date().getFullYear();
     const fers = l.feriados.slice().sort((a, b) => a.data.localeCompare(b.data)).map(f => `
-      <div class="shift row"><div><b>${C.fmtDate(f.data)}</b> <span class="muted">${C.WEEKDAY_SHORT[C.weekday(f.data)]}</span><div class="muted">${esc(f.nome)}</div></div>
+      <div class="shift row"><div><b>${C.fmtDate(f.data)}</b> <span class="muted">${C.WEEKDAY_SHORT[C.weekday(f.data)]}</span><div class="muted">${esc(f.nome)}</div>
+        <span class="badge b-F">${{ DN: 'Diurno e noturno', D: 'Só diurno', N: 'Só noturno' }[f.periodos || 'DN']}</span></div>
       <button class="btn small danger" data-act="del-feriado" data-data="${f.data}">Remover</button></div>`).join('');
     const nPl = db.plantoes.filter(p => p.localId === l.id).length;
 
@@ -516,18 +542,22 @@
 
     <div class="card">
       <h2>Feriados com valor especial</h2>
-      <div class="muted">Só as datas listadas aqui usam a linha "Feriado" da tabela (diurno e a noite que começa nesse dia).</div>
+      <div class="muted">Só as datas listadas aqui usam a linha "Feriado" da tabela. O noturno de uma data é a noite que começa nela (ex.: 24/12 noturno = 19h do dia 24 às 7h do dia 25).</div>
       ${fers || '<div class="muted" style="margin-top:8px">Nenhum feriado cadastrado.</div>'}
       <div class="grid2" style="margin-top:8px">
         <div><label for="fer-data">Data</label><input type="date" id="fer-data"></div>
         <div><label for="fer-nome">Nome</label><input id="fer-nome" placeholder="Ex.: Natal"></div>
       </div>
+      <label for="fer-per">Turnos com valor de feriado</label>
+      <select id="fer-per"><option value="DN">Diurno e noturno</option><option value="D">Só diurno</option><option value="N">Só noturno</option></select>
       <button class="btn block" data-act="add-feriado">Adicionar feriado</button>
       <div class="row-wrap" style="margin-top:10px">
+        <button class="btn small" data-act="fer-hrvj" data-ano="${ferAno}">Feriados modelo HRVJ ${ferAno}</button>
+        <button class="btn small" data-act="fer-hrvj" data-ano="${ferAno + 1}">Feriados modelo HRVJ ${ferAno + 1}</button>
         <button class="btn small" data-act="fer-nac" data-ano="${ferAno}">Sugerir nacionais ${ferAno}</button>
         <button class="btn small" data-act="fer-nac" data-ano="${ferAno + 1}">Sugerir nacionais ${ferAno + 1}</button>
       </div>
-      <div class="hint">A sugestão inclui Carnaval, Corpus Christi e vésperas de Natal/Ano-Novo — remova o que o contrato não considerar feriado.</div>
+      <div class="hint">Modelo HRVJ: Carnaval (sábado noturno a terça noturno), Semana Santa (sexta diurno a domingo noturno), 24/12 e 31/12 noturno, 25/12 e 01/01 diurno e noturno. A sugestão de nacionais inclui Carnaval, Corpus Christi e vésperas de Natal/Ano-Novo — remova o que o contrato não considerar feriado.</div>
     </div>
 
     <button class="btn danger block" data-act="del-local">Excluir local${nPl ? ` e seus ${nPl} plantões` : ''}</button>`;
@@ -545,6 +575,11 @@
       <div class="muted">${esc(l.nome)}</div>
       <label for="t-vig">Vigente a partir de</label><input type="date" id="t-vig" data-t="vigencia" value="${t.vigencia}">
       <label for="t-obs">Observação</label><input id="t-obs" data-t="obs" value="${esc(t.obs || '')}" placeholder="Ex.: Contrato 2026 / aditivo nº 2">
+      <label for="t-base">Os valores do contrato são</label>
+      <select id="t-base" data-t="base">
+        ${[[12, 'Por plantão de 12h'], [6, 'Por plantão de 6h'], [24, 'Por plantão de 24h'], [1, 'Por hora']].map(([n, txt]) => `<option value="${n}" ${C.baseTabela(t) === n ? 'selected' : ''}>${txt}</option>`).join('')}
+      </select>
+      <div class="hint">O cálculo é proporcional ao minuto: valor ÷ ${C.baseTabela(t) === 1 ? '60' : C.baseTabela(t) + 'h ÷ 60'} por minuto trabalhado. Ao mudar esta opção os números da grade não são convertidos — revise-os.</div>
     </div>
     <div class="card">
       <h2>Preenchimento rápido</h2>
@@ -557,7 +592,7 @@
       <button class="btn block" data-act="aplicar-rapido">Aplicar à grade</button>
     </div>
     <div class="card">
-      <h2>Valor da hora por dia e turno (R$)</h2>
+      <h2>${unidade(t)} — por dia e turno</h2>
       <table class="rates"><thead><tr><th>Dia</th><th class="r">Diurno</th><th class="r">Noturno</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="hint">Salvo automaticamente. Todos os plantões dentro desta vigência são recalculados na hora.</div>
     </div>
@@ -698,9 +733,13 @@
         const data = document.getElementById('fer-data').value, nome = document.getElementById('fer-nome').value.trim();
         if (!data) return toast('Informe a data');
         if (l.feriados.some(f => f.data === data)) return toast('Data já cadastrada');
-        l.feriados.push({ data, nome: nome || 'Feriado' }); save(); render(); break;
+        l.feriados.push({ data, nome: nome || 'Feriado', periodos: document.getElementById('fer-per').value }); save(); render(); break;
       }
       case 'del-feriado': l.feriados = l.feriados.filter(f => f.data !== b.dataset.data); save(); render(); break;
+      case 'fer-hrvj': {
+        const novos = C.feriadosHRVJ(Number(b.dataset.ano)).filter(f => !l.feriados.some(x => x.data === f.data));
+        l.feriados.push(...novos); save(); render(); toast(`${novos.length} feriados adicionados`); break;
+      }
       case 'fer-nac': {
         const novos = C.feriadosNacionais(Number(b.dataset.ano)).filter(f => !l.feriados.some(x => x.data === f.data));
         l.feriados.push(...novos); save(); render(); toast(`${novos.length} feriados adicionados`); break;
@@ -748,7 +787,9 @@
     if (el.dataset.t) {
       const l = getLocal(view.id); const t = l.tabelas.find(x => x.id === view.tab);
       if (el.dataset.t === 'vigencia' && !el.value) return;
-      t[el.dataset.t] = el.value; save(); return;
+      t[el.dataset.t] = el.dataset.t === 'base' ? Number(el.value) : el.value; save();
+      if (el.dataset.t === 'base' && e.type === 'change') render();
+      return;
     }
     if (el.dataset.rate) {
       const l = getLocal(view.id); const t = l.tabelas.find(x => x.id === view.tab);

@@ -53,13 +53,22 @@
     return found;
   }
 
-  function isFeriado(local, iso) {
-    return (local.feriados || []).some(f => f.data === iso);
+  /** Feriado cadastrado na data. f.periodos: 'DN' (padrão), 'D' ou 'N'. */
+  function feriadoDe(local, iso) {
+    return (local.feriados || []).find(f => f.data === iso) || null;
+  }
+  function isFeriado(local, iso, periodo) {
+    const f = feriadoDe(local, iso);
+    if (!f) return false;
+    return !periodo || (f.periodos || 'DN').includes(periodo);
   }
 
-  function dayKeyFor(local, iso) {
-    return isFeriado(local, iso) ? 'fer' : DAY_KEYS[weekday(iso)];
+  function dayKeyFor(local, iso, periodo) {
+    return isFeriado(local, iso, periodo || 'DN') ? 'fer' : DAY_KEYS[weekday(iso)];
   }
+
+  /** Horas a que o valor da tabela se refere: 1 = R$/hora, 12 = R$ por plantão de 12h. */
+  function baseTabela(t) { return Number(t && t.base) > 0 ? Number(t.base) : 1; }
 
   /**
    * Divide o plantão em segmentos Diurno/Noturno e precifica por minuto.
@@ -140,12 +149,14 @@
 
     const avisos = [];
     const segmentos = raw.map(r => {
-      const key = dayKeyFor(local, r.ref);
+      const key = dayKeyFor(local, r.ref, r.periodo);
       const tab = tabelaVigente(local, r.ref);
       if (!tab) avisos.push(`Sem tabela de valores vigente em ${fmtDate(r.ref)}.`);
-      const taxa = tab ? Number((tab.valores[key] || {})[r.periodo] || 0) : 0;
+      const bruto = tab ? Number((tab.valores[key] || {})[r.periodo] || 0) : 0;
+      const base = baseTabela(tab);
+      const taxa = bruto / base; // R$/hora (sem arredondar)
       const minutos = r.fim - r.ini;
-      const valor = Math.round((minutos / 60) * taxa * 100) / 100;
+      const valor = Math.round((minutos * bruto / (60 * base)) * 100) / 100;
       return {
         periodo: r.periodo, ref: r.ref, dayKey: key,
         inicio: isoDT(r.ini), fim: isoDT(r.fim),
@@ -219,6 +230,24 @@
     ].sort((a, b) => a.data.localeCompare(b.data));
   }
 
+  /** Feriados especiais no modelo do contrato HRVJ (por turno). */
+  function feriadosHRVJ(y) {
+    const p = pascoa(y);
+    return [
+      { data: `${y}-01-01`, nome: 'Confraternização Universal', periodos: 'DN' },
+      { data: addDays(p, -50), nome: 'Carnaval (sábado noturno)', periodos: 'N' },
+      { data: addDays(p, -49), nome: 'Carnaval (domingo)', periodos: 'DN' },
+      { data: addDays(p, -48), nome: 'Carnaval (segunda)', periodos: 'DN' },
+      { data: addDays(p, -47), nome: 'Carnaval (terça)', periodos: 'DN' },
+      { data: addDays(p, -2), nome: 'Semana Santa (sexta-feira)', periodos: 'DN' },
+      { data: addDays(p, -1), nome: 'Semana Santa (sábado)', periodos: 'DN' },
+      { data: p, nome: 'Semana Santa (domingo de Páscoa)', periodos: 'DN' },
+      { data: `${y}-12-24`, nome: 'Véspera de Natal (noturno)', periodos: 'N' },
+      { data: `${y}-12-25`, nome: 'Natal', periodos: 'DN' },
+      { data: `${y}-12-31`, nome: 'Véspera de Ano-Novo (noturno)', periodos: 'N' },
+    ].sort((a, b) => a.data.localeCompare(b.data));
+  }
+
   // ---------- formatação ----------
   function fmtDur(min) {
     const h = Math.floor(min / 60), m = min % 60;
@@ -232,9 +261,9 @@
   const api = {
     DAY_KEYS, ALL_KEYS, KEY_LABEL, WEEKDAY_NAMES, WEEKDAY_SHORT, MONTHS,
     parseDT, dateToMin, isoDate, isoDT, weekday, addDays, hhmmToMin, fmtDate, pad,
-    emptyValores, tabelaVigente, aplicarTolerancia, isFeriado, dayKeyFor, calcularPlantao,
+    emptyValores, tabelaVigente, aplicarTolerancia, isFeriado, feriadoDe, dayKeyFor, baseTabela, calcularPlantao,
     competenciaInicio, competenciaFim, moverCompetencia, competenciaLabel,
-    pascoa, feriadosNacionais, fmtDur, fmtBRL,
+    pascoa, feriadosNacionais, feriadosHRVJ, fmtDur, fmtBRL,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Calc = api;
