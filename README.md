@@ -23,6 +23,10 @@ Os dados ficam salvos **somente no aparelho** (localStorage). Faça backups peri
 2. Faça merge na branch `main`. O workflow `.github/workflows/pages.yml` roda os testes e publica.
 3. Acesse `https://<usuario>.github.io/App-Plant-o/` no celular e use “Adicionar à tela inicial”.
 
+## Versão artefato (Claude)
+`python3 tools/build-artifact.py` gera `dist/artifact.html` (arquivo único). Publicado como artefato,
+o app salva os dados na conta Claude do usuário (documentos privados) e exporta arquivos pelo recurso de downloads.
+
 ## Desenvolvimento
 - `calc.js` — motor de cálculo (puro, testável).
 - `app.js` — interface.

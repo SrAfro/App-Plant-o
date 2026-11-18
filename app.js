@@ -32,7 +32,102 @@
   }
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); }
-    catch (e) { toast('Erro ao salvar: ' + e.message); }
+    catch (e) { if (!remote.db) toast('Erro ao salvar: ' + e.message); }
+    agendarSync();
+  }
+
+  // ---------- sincronização na conta Claude (só quando roda como artefato) ----------
+  // Documentos privados por pessoa: data/users/<id>/meta (locais, ui) e
+  // data/users/<id>/y<ANO> (plantões daquele ano) — cada um bem abaixo de 256 KiB.
+  const remote = { db: null, uid: null, status: 'local', enviados: {}, timer: null, gravando: false, pendente: false };
+  function docsRemotos() {
+    const anos = {};
+    db.plantoes.forEach(p => { const y = p.inicio.slice(0, 4); (anos[y] = anos[y] || []).push(p); });
+    const docs = { meta: { versao: db.versao || 1, locais: db.locais, ui: db.ui, anos: Object.keys(anos).sort() } };
+    Object.keys(anos).forEach(y => { docs['y' + y] = { plantoes: anos[y] }; });
+    // anos que ficaram vazios precisam ser zerados
+    Object.keys(remote.enviados).forEach(k => { if (k !== 'meta' && !docs[k]) docs[k] = { plantoes: [] }; });
+    return docs;
+  }
+  function agendarSync() {
+    if (!remote.db) return;
+    clearTimeout(remote.timer);
+    remote.timer = setTimeout(sincronizar, 700);
+  }
+  async function sincronizar() {
+    if (!remote.db) return;
+    if (remote.gravando) { remote.pendente = true; return; }
+    remote.gravando = true;
+    try {
+      const docs = docsRemotos();
+      for (const [k, body] of Object.entries(docs)) {
+        const txt = JSON.stringify(body);
+        if (remote.enviados[k] === txt) continue;
+        await remote.db.collection('data/users/' + remote.uid).doc(k).set(JSON.parse(txt));
+        remote.enviados[k] = txt;
+      }
+      remote.status = 'nuvem';
+    } catch (e) {
+      console.error(e); remote.status = 'erro';
+      toast('Não consegui salvar na conta Claude — os dados continuam neste aparelho.');
+    } finally {
+      remote.gravando = false;
+      if (remote.pendente) { remote.pendente = false; agendarSync(); }
+      if (cur().v === 'dados') render();
+    }
+  }
+  async function conectarConta() {
+    if (!window.claude || typeof window.claude.use !== 'function') return;
+    try {
+      const [rdb, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+      if (!rdb || !user) return;
+      const id = await user.id();
+      if (!id) return;
+      const col = rdb.collection('data/users/' + id);
+      const meta = await col.doc('meta').get();
+      remote.db = rdb; remote.uid = id;
+      if (meta.exists) {
+        const m = meta.data();
+        const plantoes = [];
+        for (const y of (m.anos || [])) {
+          const snap = await col.doc('y' + y).get();
+          if (snap.exists) {
+            const body = snap.data();
+            remote.enviados['y' + y] = JSON.stringify(body);
+            plantoes.push(...(body.plantoes || []));
+          }
+        }
+        remote.enviados.meta = JSON.stringify(m);
+        db = migrate({ versao: m.versao, locais: m.locais, ui: m.ui, plantoes });
+        try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* sem armazenamento local */ }
+        remote.status = 'nuvem';
+        render();
+      } else {
+        await sincronizar(); // primeira vez: envia o que existe neste aparelho
+      }
+    } catch (e) {
+      console.error(e); remote.status = 'erro';
+      if (cur().v === 'dados') render();
+    }
+  }
+
+  // ---------- diálogo de confirmação dentro da página ----------
+  function confirmar(msg, ok = 'Confirmar', perigo = true) {
+    return new Promise(resolve => {
+      const wrap = document.createElement('div');
+      wrap.className = 'modal';
+      wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><p>${esc(msg)}</p>
+        <div class="row-wrap" style="justify-content:flex-end">
+          <button class="btn" data-r="0">Cancelar</button>
+          <button class="btn ${perigo ? 'danger-fill' : 'primary'}" data-r="1">${esc(ok)}</button></div></div>`;
+      const fechar = v => { wrap.remove(); resolve(v); };
+      wrap.addEventListener('click', e => {
+        if (e.target === wrap) return fechar(false);
+        const b = e.target.closest('[data-r]'); if (b) fechar(b.dataset.r === '1');
+      });
+      document.body.appendChild(wrap);
+      wrap.querySelector('[data-r="1"]').focus();
+    });
   }
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function novoLocal(nome, dia, cor) {
@@ -91,8 +186,10 @@
   const TAB_OF = { painel: 'painel', detalhe: 'painel', lancar: 'lancar', locais: 'locais', local: 'locais', tabela: 'locais', dados: 'dados' };
   function cur() { return stack[stack.length - 1]; }
   function go(view, replace) {
-    if (replace) { stack = [view]; history.replaceState({ n: 1 }, ''); }
-    else { stack.push(view); history.pushState({ n: stack.length }, ''); }
+    try {
+      if (replace) { stack = [view]; history.replaceState({ n: 1 }, ''); }
+      else { stack.push(view); history.pushState({ n: stack.length }, ''); }
+    } catch (e) { if (!replace) stack.push(view); else stack = [view]; }
     if (view.v === 'lancar') form = null;
     render(); window.scrollTo(0, 0);
   }
@@ -472,7 +569,9 @@
     const bytes = new Blob([JSON.stringify(db)]).size;
     return `<div class="card">
       <h2>Backup</h2>
-      <div class="muted">Os dados ficam apenas neste aparelho/navegador. Faça backup regularmente (ex.: salve no Google Drive ou envie no WhatsApp para você mesmo).</div>
+      ${remote.status === 'nuvem' ? '<div><span class="badge b-ok">Sincronizado na sua conta Claude</span></div><div class="muted" style="margin-top:6px">Os dados ficam salvos na sua conta e aparecem em qualquer aparelho em que você abrir este app. Mesmo assim, baixe um backup de vez em quando.</div>'
+        : remote.status === 'erro' ? '<div><span class="badge b-warn">Falha ao sincronizar</span></div><div class="muted" style="margin-top:6px">Os dados estão salvos só neste aparelho. Baixe um backup para não perder nada.</div>'
+        : '<div class="muted">Os dados ficam apenas neste aparelho/navegador. Faça backup regularmente (ex.: salve no Google Drive ou envie no WhatsApp para você mesmo).</div>'}
       <button class="btn primary block" data-act="export-json">Baixar backup (.json)</button>
       <label for="imp" class="btn block" style="color:var(--text);font-size:15px;margin-top:10px">Restaurar backup…</label>
       <input type="file" id="imp" accept="application/json,.json" hidden>
@@ -503,14 +602,24 @@
       file.text().then(txt => {
         const d = JSON.parse(txt);
         if (!d || !Array.isArray(d.locais) || !Array.isArray(d.plantoes)) throw new Error('arquivo inválido');
-        if (!confirm(`Restaurar backup com ${d.plantoes.length} plantões e ${d.locais.length} locais? Os dados atuais serão substituídos.`)) return;
-        db = migrate(d); save(); toast('Backup restaurado'); go({ v: 'painel' }, true);
+        return confirmar(`Restaurar backup com ${d.plantoes.length} plantões e ${d.locais.length} locais? Os dados atuais serão substituídos.`, 'Restaurar').then(ok => {
+          if (!ok) return;
+          db = migrate(d); save(); toast('Backup restaurado'); go({ v: 'painel' }, true);
+        });
       }).catch(e => toast('Não foi possível ler: ' + e.message));
     });
   };
 
   // ---------------- exportação ----------------
-  function download(nome, conteudo, tipo) {
+  async function download(nome, conteudo, tipo) {
+    if (window.claude && typeof window.claude.use === 'function') {
+      const dl = await window.claude.use('downloads');
+      if (dl) {
+        try { await dl.save({ filename: nome, data: conteudo }); toast('Arquivo salvo'); }
+        catch (e) { if (e && e.code !== 'declined') toast('Não foi possível salvar o arquivo (' + (e.code || 'erro') + ').'); }
+        return;
+      }
+    }
     const blob = new Blob([conteudo], { type: tipo });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = nome;
@@ -547,9 +656,10 @@
       case 'duplicar': go({ v: 'lancar', dup: b.dataset.id }); break;
       case 'excluir': {
         const p = getPlantao(b.dataset.id);
-        if (p && confirm(`Excluir o plantão de ${diaHora(p.inicio)}?`)) {
+        if (p) confirmar(`Excluir o plantão de ${diaHora(p.inicio)}?`, 'Excluir').then(ok => {
+          if (!ok) return;
           db.plantoes = db.plantoes.filter(x => x.id !== p.id); save(); render(); toast('Plantão excluído');
-        } break;
+        }); break;
       }
       case 'recebido': l.recebidos[view.comp] ? delete l.recebidos[view.comp] : (l.recebidos[view.comp] = new Date().toISOString()); save(); render(); break;
       case 'csv-comp': {
@@ -571,8 +681,9 @@
       }
       case 'abrir-tabela': go({ v: 'tabela', id: l.id, tab: b.dataset.tab }); break;
       case 'del-tabela':
-        if (confirm('Excluir esta tabela de valores?')) { l.tabelas = l.tabelas.filter(t => t.id !== view.tab); save(); history.back(); }
-        break;
+        confirmar('Excluir esta tabela de valores? Plantões da vigência dela passam a usar a tabela anterior.', 'Excluir').then(ok => {
+          if (ok) { l.tabelas = l.tabelas.filter(t => t.id !== view.tab); save(); history.back(); }
+        }); break;
       case 'aplicar-rapido': {
         const t = l.tabelas.find(x => x.id === view.tab);
         const get = id => { const v = document.getElementById(id).value; return v.trim() === '' ? null : parseNum(v); };
@@ -595,16 +706,19 @@
         l.feriados.push(...novos); save(); render(); toast(`${novos.length} feriados adicionados`); break;
       }
       case 'del-local':
-        if (confirm(`Excluir "${l.nome}" e todos os seus plantões? Isso não pode ser desfeito.`)) {
+        confirmar(`Excluir "${l.nome}" e todos os seus plantões? Isso não pode ser desfeito.`, 'Excluir local').then(ok => {
+          if (!ok) return;
           db.plantoes = db.plantoes.filter(p => p.localId !== l.id);
           db.locais = db.locais.filter(x => x.id !== l.id); save(); go({ v: 'locais' }, true);
-        } break;
+        }); break;
       case 'export-json': download(`backup_plantoes_${todayISO()}.json`, JSON.stringify(db, null, 2), 'application/json'); break;
       case 'csv-all': download(`plantoes_todos_${todayISO()}.csv`, csv(db.plantoes), 'text/csv;charset=utf-8'); break;
       case 'apagar-tudo':
-        if (confirm('Apagar TODOS os locais e plantões deste aparelho?') && confirm('Tem certeza? Faça um backup antes.')) {
-          localStorage.removeItem(KEY); db = seed(); save(); go({ v: 'painel' }, true);
-        } break;
+        confirmar('Apagar TODOS os locais e plantões? Faça um backup antes — isso não pode ser desfeito.', 'Apagar tudo').then(ok => {
+          if (!ok) return;
+          try { localStorage.removeItem(KEY); } catch (e) { /* ignora */ }
+          db = seed(); save(); go({ v: 'painel' }, true);
+        }); break;
     }
   });
 
@@ -650,8 +764,9 @@
   $app.addEventListener('focusin', e => { if (e.target.dataset.rate) e.target.select(); });
 
   // ---------------- início ----------------
-  history.replaceState({ n: 1 }, '');
+  try { history.replaceState({ n: 1 }, ''); } catch (e) { /* ignora */ }
   render();
+  conectarConta();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
