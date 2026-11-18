@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Meus Plantões</title>
+  <meta name="description" content="Cálculo de valores de plantões médicos por minuto, dia da semana, turno e local.">
+  <meta name="theme-color" content="#0f6b5c">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="btn-back" hidden aria-label="Voltar">‹</button>
+    <h1 id="title">Meus Plantões</h1>
+  </header>
+
+  <main id="app"></main>
+
+  <nav class="tabbar">
+    <button data-tab="painel" class="active"><span>▦</span>Painel</button>
+    <button data-tab="lancar"><span>＋</span>Lançar</button>
+    <button data-tab="locais"><span>⌂</span>Locais</button>
+    <button data-tab="dados"><span>⇅</span>Dados</button>
+  </nav>
+
+  <div id="toast" role="status"></div>
+
+  <script src="calc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
