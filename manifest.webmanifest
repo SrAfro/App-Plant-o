@@ -1,0 +1,14 @@
+{
+  "name": "Meus Plantões",
+  "short_name": "Plantões",
+  "description": "Cálculo de valores de plantões médicos por minuto, turno, dia da semana e local.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#0f6b5c",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
