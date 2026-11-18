@@ -24,6 +24,8 @@ jobs:
       - run: node tests/calc.test.js
       - run: mkdir _site && cp index.html styles.css calc.js app.js sw.js manifest.webmanifest icon.svg _site/
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
       - id: deployment
         uses: actions/deploy-pages@v4
