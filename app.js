@@ -260,13 +260,17 @@
       </div>`;
     }).join('');
 
-    const recentes = db.plantoes.slice().sort((a, b) => b.inicio.localeCompare(a.inicio)).slice(0, 5);
+    const recentes = db.plantoes.slice().sort((a, b) => b.inicio.localeCompare(a.inicio)).slice(0, 10);
     const recHTML = recentes.length ? recentes.map(p => {
       const l = getLocal(p.localId); if (!l) return '';
       const r = C.calcularPlantao(p, l);
-      return `<div class="shift row"><div><div class="when">${diaHora(p.inicio)} → ${diaHora(p.fim)}</div>
+      return `<div class="shift"><div class="row"><div><div class="when">${diaHora(p.inicio)} → ${diaHora(p.fim)}</div>
         <div class="muted"><span class="dot" style="background:${esc(l.cor)}"></span>${esc(l.nome)} · ${C.fmtDur(r.minutos)}</div></div>
-        <div class="num"><b>${C.fmtBRL(r.valor)}</b></div></div>`;
+        <div class="num"><b>${C.fmtBRL(r.valor)}</b></div></div>
+        <div class="acts">
+          <button class="btn small" data-act="editar" data-id="${p.id}">Editar</button>
+          <button class="btn small danger" data-act="excluir" data-id="${p.id}">Excluir</button>
+        </div></div>`;
     }).join('') : '<div class="muted">Nenhum plantão lançado ainda.</div>';
 
     return `<div class="card hero">
@@ -412,6 +416,7 @@
 
       <div class="preview" id="preview"></div>
       <button class="btn primary block" data-act="salvar-plantao">${f.id ? 'Salvar alterações' : 'Salvar plantão'}</button>
+      ${f.id ? `<button class="btn danger block" style="margin-top:10px" data-act="excluir" data-id="${f.id}">Excluir este plantão</button>` : ''}
     </div>`;
   };
   AFTER.lancar = function () { if (form) updatePreview(); };
@@ -693,7 +698,8 @@
         const p = getPlantao(b.dataset.id);
         if (p) confirmar(`Excluir o plantão de ${diaHora(p.inicio)}?`, 'Excluir').then(ok => {
           if (!ok) return;
-          db.plantoes = db.plantoes.filter(x => x.id !== p.id); save(); render(); toast('Plantão excluído');
+          db.plantoes = db.plantoes.filter(x => x.id !== p.id); save(); toast('Plantão excluído');
+          if (cur().v === 'lancar') { form = null; history.back(); } else render();
         }); break;
       }
       case 'recebido': l.recebidos[view.comp] ? delete l.recebidos[view.comp] : (l.recebidos[view.comp] = new Date().toISOString()); save(); render(); break;
